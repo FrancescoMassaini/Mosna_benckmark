@@ -1,0 +1,297 @@
+---
+title: "HMRF_Phillips"
+author: "Francesco Massaini"
+format: html
+editor: visual
+---
+
+```{r}
+library(Giotto)
+library(dplyr)
+library(tibble)
+library(readxl)
+library(data.table)
+library(ggplot2)
+
+```
+
+```{r}
+phillips = as.data.table(read_xlsx('./41467_2021_26974_MOESM3_ESM_-_Objects.xlsx'))
+
+ggplot(phillips, aes(x = X, y = Y, color = FileName)) +
+  geom_point() +
+  labs(title = "Scatterplot",
+       x = "X",
+       y = "Y",
+       color = "Filename") +
+  theme_minimal()
+
+min_max_df <- phillips[, .(
+  min_X = min(X),
+  max_X = max(X),
+  min_Y = min(Y),
+  max_Y = max(Y)
+), by = FileName]
+
+
+
+
+#phillips = phillips[FileName == "reg056"]
+```
+
+```{r}
+# Code Block 2 - Set Paths
+
+my_working_dir = './phillips_output/'
+```
+
+```{r}
+# Code Block 3 - Set Giotto instructions
+
+#  set Giotto instructions
+instrs = createGiottoInstructions(save_plot = FALSE,
+                                  show_plot = TRUE,
+                                  save_dir = my_working_dir,
+                                  python_path = NULL)
+
+# Subset Phillips ####
+marker_col_names = c('FOXP3', 'GATA3', 'MUC-1', 'Vimentin', 'T-bet', 'CD62L', 'Cytokeratin', 'PD-L1', 'Ki-67', 'CD15', 'CD30', 'CD2', 'GranzymeB', 'CD5', 'CD39', 'MMP9', 'CD4', 'LAG3', 'CD25', 'CD56', 'CD20', 'PD-1', 'CD11c', 'CLA-CD162', 'IDO-1', 'VISTA', 'HLA-DR', 'ICOS', 'BCL-2', 'CD3', 'CD69', 'CD8', 'CD7', 'CD45RA', 'CD45', 'CD1a', 'CD57', 'B-catenin', 'CD45RO', 'CD71', 'CD34', 'CD68', 'CD38', 'CollagenIV', 'CD31', 'Podoplanin', 'CD138', 'CD163', 'Mastcell-tryptase', 'MMP12', 'CD164', 'p53', 'CCR6', 'CD16', 'CD11b', 'CCR4', 'EGFR', 'HOECHST1:Cyc_1_ch_1', 'DRAQ5')
+coord_col_names = c('X', 'Y')
+meta_names = c("Count",'ClusterName', "FileName", "Patients") # FileName = sample ClusterName = cell types
+
+# create file with offset information
+my_offset_file = data.table::data.table(sample = unique(phillips$FileName),
+                                        x_offset = 5000*seq(0, length(unique(phillips$FileName))),
+                                        y_offset = rep(0, length(unique(phillips$FileName))))
+my_offset_file$x_offset = sample(my_offset_file$x_offset)
+# create a stitched image
+my_offset_file <- as.data.table(my_offset_file)
+
+phillips[my_offset_file, on = .(FileName = sample), X := X + i.x_offset]
+
+
+
+ggplot(phillips, aes(x = X, y = Y, color = FileName)) +
+  geom_point() +
+  labs(title = "Scatterplot",
+       x = "X",
+       y = "Y",
+       color = "Filename") +
+  theme_minimal()
+
+# subset phillips to create Giotto object
+t_expr = as.data.frame(t(column_to_rownames(phillips[, c("Count", ..marker_col_names)], var = "Count"))) 
+expr = as.data.table(rownames_to_column(t_expr, var = "markers"))
+setnames(expr, names(expr), as.character(names(expr)))
+
+coord = as.data.table(phillips[, c(..coord_col_names, "Count")]) 
+colnames(coord) = c("sdimx", "sdimy", "Count") 
+coord[, Count := as.character(Count)] 
+
+meta = as.data.table(phillips[, ..meta_names])
+meta[, Count := as.character(Count)] 
+
+```
+
+Expression file formatting
+
+Expression count matrices accepted by Giotto should have columns correlating to individual cells (cell IDs) and rows to individual features (feature IDs).
+
+data.table objects and text-based files ie: (.csv, .tsv, .txt) to be read in should have column 1 be feature IDs.
+
+Locations file formatting
+
+Numerical columns will be interpreted in order of x, y, and (optionally) z coordinate. The first non-numerical column will be taken as cell IDs
+
+```{r}
+# Code Block 4 - Create Giotto object
+giotto = createGiottoObject(expression = expr,
+                            expression_matrix_class = "custom",
+                            expression_feat = "protein",
+                            spatial_locs = coord,
+                            instructions = instrs,
+                            offset_file = my_offset_file)
+
+giotto = addCellMetadata(gobject = giotto,
+                         new_metadata = meta,
+                         by_column = T,
+                         column_cell_ID = "Count")
+
+# visualize
+
+cell_color_code = Giotto::getDistinctColors(length(unique(meta$ClusterName)))
+
+spatPlot(gobject = giotto,
+         cell_color = "ClusterName",
+         color_as_factor = T,
+         cell_color_code = cell_color_code)
+
+giottoplot = data.frame(sdimx = giotto@spatial_locs[["cell"]][["raw"]]@coordinates[["sdimx"]], 
+                        sdimy = giotto@spatial_locs[["cell"]][["raw"]]@coordinates[["sdimy"]],
+                        FileName = giotto@cell_metadata[["cell"]][["protein"]]@metaDT[["FileName"]])
+
+ggplot(giottoplot, aes(x = sdimx, y = sdimy, color = FileName)) +
+  geom_point() +
+  labs(title = "Scatterplot",
+       x = "X",
+       y = "Y",
+       color = "Filename") +
+  theme_minimal()
+```
+
+```{r}
+giotto <- createSpatialGrid(gobject = giotto,
+                                sdimx_stepsize = 500,
+                                sdimy_stepsize = 500,
+                                minimum_padding = 50)
+spatPlot(gobject = giotto, show_grid = T, point_size = 1.5)
+
+## delaunay network: stats + creation
+plotStatDelaunayNetwork(gobject = giotto, maximum_distance = 400, save_plot = F)
+giotto = createSpatialNetwork(gobject = giotto, minimum_k = 2, maximum_distance_delaunay = 400)
+## create spatial networks based on k and/or distance from centroid
+giotto <- createSpatialNetwork(gobject = giotto, method = 'kNN', k = 5, name = 'spatial_network')
+# giotto <- createSpatialNetwork(gobject = giotto, method = 'kNN', k = 10, name = 'large_network')
+
+# ## visualize different spatial networks on first field (~ layer 1)
+# cell_metadata = pDataDT(giotto)
+# field1_ids = cell_metadata[FOV == 0]$cell_ID
+# subgiotto = subsetGiotto(giotto, cell_ids = field1_ids)
+spatPlot2D(gobject = giotto, show_network = T,
+         network_color = 'blue', spatial_network_name = 'Delaunay_network',
+         point_size = 2.5, cell_color = 'ClusterName',
+         cow_rel_h = 1,
+         cow_rel_w = 1,
+         coord_fix_ratio = 1, 
+         save_plot = T)
+
+network = giotto@spatial_network[["cell"]][["Delaunay_network"]]@networkDT
+
+plot = ggplot() +
+  geom_segment(data = network, aes(x = sdimx_begin, y = sdimy_begin, xend = sdimx_end, yend = sdimy_end), 
+               color = "blue", size = 1.5, alpha = 0.8) + # Linea blu più spessa
+  # Aggiungi i nodi del network
+  geom_point(data = giottoplot, aes(x = sdimx, y = sdimy, color = FileName), size = 2) +
+  labs(title = "Scatterplot",
+       x = "X",
+       y = "Y",
+       color = "Filename") +
+  theme_minimal()
+
+ggsave("./phillips_output/plot_Delaunay.png", plot = plot, width = 60, height = 6, limitsize = FALSE)
+
+
+```
+
+```{r}
+# giotto = normalizeGiotto(gobject = giotto, scalefactor = 6000, verbose = T)
+
+giotto = binSpect(giotto, return_gobject = TRUE, expression_values = "raw")
+ 
+giotto <- runPCA(gobject = giotto, feats_to_use = "all_genes", scale_unit = F, center = F, expression_values = "raw")
+screePlot(giotto)
+plotPCA(giotto)
+ 
+giotto <- runUMAP(giotto, dimensions_to_use = 1:15, n_threads = 10, expression_values = "raw")
+plotUMAP(gobject = giotto)
+ 
+giotto <- runtSNE(giotto, dimensions_to_use = 1:15, expression_values = "raw")
+plotTSNE(gobject = giotto)
+ 
+ 
+## sNN network (default) on previously computed dim reduction 
+giotto <- createNearestNetwork(
+   gobject = giotto, 
+   dim_reduction_to_use = "umap",  # "umap" as it is the reduction method
+   spat_unit = "cell", 
+   feat_type = "protein", 
+   dim_reduction_name = "protein.umap",  # Exact name in your object
+   k = 10
+ )
+ ## Leiden clustering on nn_network_to_use = "sNN" (default)
+ # Perform Leiden clustering using the created sNN network
+giotto <- doLeidenCluster(
+   gobject = giotto,
+   nn_network_to_use = "sNN",  # The network type to use
+   spat_unit = "cell", 
+   feat_type = "protein", 
+   network_name = "sNN.umap",  # The exact name of the network created
+   resolution = 0.4,
+   n_iterations = 1000
+ )
+# 
+# 
+plotUMAP(gobject = giotto,
+          cell_color = 'leiden_clus',
+          show_NN_network = T,
+          nn_network_to_use = "sNN",  # Specify the correct network type
+          network_name = "sNN.umap",  # Specify the correct network name
+          point_size = 2.5)
+
+# giotto@dimension_reduction$cells$spatial <- list()
+# giotto@dimension_reduction$cells$spatial$spatial_feat <- NULL
+# giotto@dimension_reduction$cells$spatial$spatial_feat$name <- "spatial_feat"
+# giotto@dimension_reduction$cells$spatial$spatial_feat$reduction_method <- "spatial"
+
+
+HMRF_init_obj <- initHMRF_V2(gobject = giotto, cl.method = "km",
+                             expression_values = "raw",
+                             # use_spatial_genes = my_spatial_genes,
+                             # spatial_network_name = 'Delaunay_network',
+                             spat_unit = "cell", 
+                             feat_type = "protein",
+                             k = 10)
+
+#' This function will run a HMRF model after initialization of HMRF. Of note
+#' is the beta parameter, the smoothing parameter.
+#' If the users are interested in selecting results from different smoothness,
+#' we recommend running a range of betas,
+#' hence betas specify what this range is. For example, betas=c(0,10,5) will
+#' run for the following betas: 0, 10, 20, 30, 40.
+#' betas=c(0,5,2) will run for betas: 0, 5, 10. Setting the beta can use the
+#' following guideline:
+#' If number of features N is 10<N<50, set betas=c(0, 1, 20)
+#' For 50<N<100, set betas=c(0, 2, 25)
+#' For 100<N<500, set betas=c(0, 5, 20)
+#' If user didn't specify the number or sequence of beta, the function will
+#' provide a default value based on the number of features.
+
+HMRF_spatial_genes = doHMRF_V2(HMRF_init_obj = HMRF_init_obj)
+# Default value beta = 6 is used...[1] "Doing beta=6.000"
+
+save(HMRF_init_obj, file = "./HMRF_init_obj_leiden.RData")
+save(HMRF_spatial_genes, file = "./HMRF_spatial_genes_leiden.RData")
+# save(giotto, file = "./giotto.RData")
+
+library(tibble)
+library(dplyr)
+library(ggplot2)
+df = as.data.frame(HMRF_spatial_genes[[1]]) 
+df = rownames_to_column(df, var = "cell_ID")
+
+coord = giotto@spatial_locs[["cell"]][["raw"]]@coordinates
+
+merge = left_join(df, coord)
+
+niches = ggplot(data = merge, aes(x = sdimx, y = sdimy, color =  as.character(class) )) +
+  geom_point() +
+  theme_minimal()
+
+ggsave("./phillips_output/niches_k_means_shuffled_sample.png", plot = niches, width = 100, height = 6, limitsize = FALSE)
+
+
+```
+
+```{r}
+CellClus <- merge[,c("cell_ID","class")]
+CellFile <- meta[,c("FileName","Count", "Patients", "ClusterName")]
+colnames(CellFile) <- c("FileName","cell_ID", "Patients", "cell_type")
+
+final_df = merge(CellClus, CellFile)
+save(final_df, file = "Phillips_HMRF_niches.RData")
+
+ClusterCount <- as.data.frame(table(merge(CellClus, CellFile ) [, c("FileName","class")] ))
+
+M <- as.matrix(table(merge(CellClus, CellFile ) [, c("FileName","class")] ))
+pheatmap::pheatmap(M)
+```
